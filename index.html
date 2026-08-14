@@ -63,6 +63,22 @@ async function idbSet(key, value) {
   });
 }
 
+/* ============ Firebase(Firestore)による端末間同期 ============ */
+let FS = null; // 接続後、{ db, collection, doc, onSnapshot, setDoc, deleteDoc, query, orderBy, ... } を保持
+
+async function connectFirebase(config) {
+  const appMod = await import("https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js");
+  const fsMod = await import("https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js");
+  const authMod = await import("https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js");
+  const app = appMod.initializeApp(config);
+  const db = fsMod.getFirestore(app);
+  try { await fsMod.enableIndexedDbPersistence(db); } catch (e) { /* 複数タブなどで失敗する場合は無視 */ }
+  const auth = authMod.getAuth(app);
+  await authMod.signInAnonymously(auth);
+  FS = { db, ...fsMod };
+  return true;
+}
+
 /* ============ 画像圧縮 ============ */
 function compressImage(file, maxWidth = 380, quality = 0.55) {
   return new Promise((resolve, reject) => {
@@ -247,73 +263,184 @@ function App() {
   const [newLinkLabel, setNewLinkLabel] = useState("");
   const [newLinkUrl, setNewLinkUrl] = useState("");
   const [newNote, setNewNote] = useState("");
+  const [fsConnected, setFsConnected] = useState(false);
+  const [fsConnecting, setFsConnecting] = useState(false);
+  const [fsConfigDraft, setFsConfigDraft] = useState("");
+  const [fsError, setFsError] = useState("");
+  const [localBackup, setLocalBackup] = useState([]);
+
+  function attachFirestoreListeners() {
+    const beersQuery = FS.query(FS.collection(FS.db, "beers"), FS.orderBy("createdAt", "desc"));
+    FS.onSnapshot(beersQuery, (snap) => {
+      setBeers(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    }, (e) => setFsError("同期エラー: " + e.message));
+
+    FS.onSnapshot(FS.doc(FS.db, "infoMeta", "data"), (snap) => {
+      const d = snap.data();
+      if (d) {
+        setInfoLinks(d.links || DEFAULT_INFO_LINKS);
+        setInfoNotes(d.notes || []);
+      } else {
+        FS.setDoc(FS.doc(FS.db, "infoMeta", "data"), { links: DEFAULT_INFO_LINKS, notes: [] });
+      }
+    });
+
+    FS.onSnapshot(FS.collection(FS.db, "infoImages"), (snap) => {
+      if (snap.empty) {
+        DEFAULT_INFO_IMAGES.forEach((img) => {
+          FS.setDoc(FS.doc(FS.db, "infoImages", img.id), { caption: img.caption, src: img.src });
+        });
+      } else {
+        setInfoImages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      }
+    });
+  }
+
+  async function loadLocalFallback() {
+    try {
+      const stored = await idbGet("beers");
+      if (stored) setBeers(JSON.parse(stored));
+    } catch (e) { /* 初回は何もない */ }
+    try {
+      const info = await idbGet("info");
+      if (info) {
+        const parsed = JSON.parse(info);
+        setInfoLinks(parsed.links || DEFAULT_INFO_LINKS);
+        setInfoImages(parsed.images || DEFAULT_INFO_IMAGES);
+        setInfoNotes(parsed.notes || []);
+      } else {
+        await idbSet("info", JSON.stringify({ links: DEFAULT_INFO_LINKS, images: DEFAULT_INFO_IMAGES, notes: [] }));
+      }
+    } catch (e) { /* 初回は何もない */ }
+  }
 
   useEffect(() => {
     (async () => {
-      try {
-        const stored = await idbGet("beers");
-        if (stored) setBeers(JSON.parse(stored));
-      } catch (e) { /* 初回は何もない */ }
-      try {
-        const info = await idbGet("info");
-        if (info) {
-          const parsed = JSON.parse(info);
-          setInfoLinks(parsed.links || DEFAULT_INFO_LINKS);
-          setInfoImages(parsed.images || DEFAULT_INFO_IMAGES);
-          setInfoNotes(parsed.notes || []);
-        } else {
-          await idbSet("info", JSON.stringify({ links: DEFAULT_INFO_LINKS, images: DEFAULT_INFO_IMAGES, notes: [] }));
-        }
-      } catch (e) { /* 初回は何もない */ }
       const key = localStorage.getItem("anthropic_api_key") || "";
       setApiKey(key);
+
+      const fsConfigStr = localStorage.getItem("firebase_config");
+      if (fsConfigStr) {
+        try {
+          const config = JSON.parse(fsConfigStr);
+          await connectFirebase(config);
+          setFsConnected(true);
+          attachFirestoreListeners();
+        } catch (e) {
+          setFsError("Firebaseへの接続に失敗しました。設定を確認してください。詳細: " + e.message);
+          await loadLocalFallback();
+        }
+      } else {
+        await loadLocalFallback();
+      }
       setLoaded(true);
     })();
   }, []);
 
+  async function handleConnectFirebase() {
+    setFsError("");
+    setFsConnecting(true);
+    try {
+      const config = JSON.parse(fsConfigDraft);
+      setLocalBackup(beers);
+      await connectFirebase(config);
+      localStorage.setItem("firebase_config", JSON.stringify(config));
+      setFsConnected(true);
+      attachFirestoreListeners();
+    } catch (e) {
+      setFsError("接続に失敗しました。貼り付けた設定(JSON)をご確認ください。詳細: " + e.message);
+    } finally {
+      setFsConnecting(false);
+    }
+  }
+
+  async function migrateLocalToFirebase() {
+    if (!FS) return;
+    try {
+      for (let i = 0; i < localBackup.length; i++) {
+        const { id, ...rest } = localBackup[i];
+        const docId = id || ("beer_" + Date.now() + "_" + i);
+        await FS.setDoc(FS.doc(FS.db, "beers", docId), { ...rest, createdAt: Date.now() - i });
+      }
+      setLocalBackup([]);
+    } catch (e) {
+      setError("アップロードに失敗しました: " + e.message);
+    }
+  }
+
   async function persistInfo(next) {
     try { await idbSet("info", JSON.stringify(next)); } catch (e) { /* 保存失敗は静かに無視 */ }
   }
-  function addInfoLink() {
+  async function addInfoLink() {
     if (!newLinkLabel.trim() || !newLinkUrl.trim()) return;
     const next = [...infoLinks, { id: "l_" + Date.now(), label: newLinkLabel.trim(), url: newLinkUrl.trim() }];
-    setInfoLinks(next);
-    persistInfo({ links: next, images: infoImages, notes: infoNotes });
+    if (fsConnected) {
+      try { await FS.setDoc(FS.doc(FS.db, "infoMeta", "data"), { links: next, notes: infoNotes }); }
+      catch (e) { setError("追加に失敗しました: " + e.message); }
+    } else {
+      setInfoLinks(next);
+      persistInfo({ links: next, images: infoImages, notes: infoNotes });
+    }
     setNewLinkLabel(""); setNewLinkUrl("");
   }
-  function deleteInfoLink(id) {
+  async function deleteInfoLink(id) {
     const next = infoLinks.filter((l) => l.id !== id);
-    setInfoLinks(next);
-    persistInfo({ links: next, images: infoImages, notes: infoNotes });
+    if (fsConnected) {
+      try { await FS.setDoc(FS.doc(FS.db, "infoMeta", "data"), { links: next, notes: infoNotes }); }
+      catch (e) { setError("削除に失敗しました: " + e.message); }
+    } else {
+      setInfoLinks(next);
+      persistInfo({ links: next, images: infoImages, notes: infoNotes });
+    }
   }
   async function addInfoImage(e) {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     try {
       const compressed = await compressImage(file, 900, 0.7);
-      const next = [...infoImages, { id: "img_" + Date.now(), caption: "", src: compressed }];
-      setInfoImages(next);
-      persistInfo({ links: infoLinks, images: next, notes: infoNotes });
+      if (fsConnected) {
+        const id = "img_" + Date.now();
+        await FS.setDoc(FS.doc(FS.db, "infoImages", id), { caption: "", src: compressed });
+      } else {
+        const next = [...infoImages, { id: "img_" + Date.now(), caption: "", src: compressed }];
+        setInfoImages(next);
+        persistInfo({ links: infoLinks, images: next, notes: infoNotes });
+      }
     } catch (err) {
       setError("画像の追加に失敗しました。");
     }
   }
-  function deleteInfoImage(id) {
-    const next = infoImages.filter((i) => i.id !== id);
-    setInfoImages(next);
-    persistInfo({ links: infoLinks, images: next, notes: infoNotes });
+  async function deleteInfoImage(id) {
+    if (fsConnected) {
+      try { await FS.deleteDoc(FS.doc(FS.db, "infoImages", id)); }
+      catch (e) { setError("削除に失敗しました: " + e.message); }
+    } else {
+      const next = infoImages.filter((i) => i.id !== id);
+      setInfoImages(next);
+      persistInfo({ links: infoLinks, images: next, notes: infoNotes });
+    }
   }
-  function addInfoNote() {
+  async function addInfoNote() {
     if (!newNote.trim()) return;
     const next = [{ id: "note_" + Date.now(), text: newNote.trim(), datetime: new Date().toISOString() }, ...infoNotes];
-    setInfoNotes(next);
-    persistInfo({ links: infoLinks, images: infoImages, notes: next });
+    if (fsConnected) {
+      try { await FS.setDoc(FS.doc(FS.db, "infoMeta", "data"), { links: infoLinks, notes: next }); }
+      catch (e) { setError("追加に失敗しました: " + e.message); }
+    } else {
+      setInfoNotes(next);
+      persistInfo({ links: infoLinks, images: infoImages, notes: next });
+    }
     setNewNote("");
   }
-  function deleteInfoNote(id) {
+  async function deleteInfoNote(id) {
     const next = infoNotes.filter((n) => n.id !== id);
-    setInfoNotes(next);
-    persistInfo({ links: infoLinks, images: infoImages, notes: next });
+    if (fsConnected) {
+      try { await FS.setDoc(FS.doc(FS.db, "infoMeta", "data"), { links: infoLinks, notes: next }); }
+      catch (e) { setError("削除に失敗しました: " + e.message); }
+    } else {
+      setInfoNotes(next);
+      persistInfo({ links: infoLinks, images: infoImages, notes: next });
+    }
   }
 
   async function persist(next) {
@@ -379,14 +506,29 @@ function App() {
 
   async function handleSave() {
     if (!form.name.trim()) { setError("ビール名を入力してください。"); return; }
-    const next = editingId
-      ? beers.map((b) => (b.id === editingId ? { ...form, id: editingId } : b))
-      : [{ ...form, id: "beer_" + Date.now() }, ...beers];
-    await persist(next);
+    if (fsConnected) {
+      try {
+        const id = editingId || ("beer_" + Date.now());
+        const prevCreatedAt = editingId ? (beers.find((b) => b.id === editingId) || {}).createdAt : null;
+        await FS.setDoc(FS.doc(FS.db, "beers", id), { ...form, createdAt: prevCreatedAt || Date.now() });
+      } catch (e) {
+        setError("保存に失敗しました: " + e.message);
+        return;
+      }
+    } else {
+      const next = editingId
+        ? beers.map((b) => (b.id === editingId ? { ...form, id: editingId } : b))
+        : [{ ...form, id: "beer_" + Date.now() }, ...beers];
+      await persist(next);
+    }
     setScreen("list");
   }
   async function handleDelete(id) {
-    await persist(beers.filter((b) => b.id !== id));
+    if (fsConnected) {
+      try { await FS.deleteDoc(FS.doc(FS.db, "beers", id)); } catch (e) { setError("削除に失敗しました: " + e.message); }
+    } else {
+      await persist(beers.filter((b) => b.id !== id));
+    }
     setScreen("list");
   }
   async function handlePhoto(index, e) {
@@ -423,7 +565,7 @@ function App() {
 
       {showKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{ background: "rgba(0,0,0,0.6)" }}>
-          <div className="w-full rounded-2xl p-5" style={{ background: CARD, border: `1px solid ${BORDER}`, maxWidth: 380 }}>
+          <div className="w-full rounded-2xl p-5 overflow-y-auto" style={{ background: CARD, border: `1px solid ${BORDER}`, maxWidth: 380, maxHeight: "85vh" }}>
             <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 18 }}>Anthropic APIキー</h3>
             <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
               「自動取得」機能を使うには、ご自身のAnthropic APIキーが必要です。console.anthropic.com で発行できます。キーはこの端末のブラウザ内にのみ保存され、外部には送信されません。
@@ -442,6 +584,38 @@ function App() {
                 保存
               </button>
             </div>
+
+            <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 20, paddingTop: 16 }}>
+              <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16 }}>端末間の同期(Firebase)</h3>
+              {fsConnected ? (
+                <p style={{ fontSize: 12, color: ACCENT, marginTop: 6 }}>✓ 接続済み・自動で同期されています</p>
+              ) : (
+                <>
+                  <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
+                    Firebaseの設定(firebaseConfig)を貼り付けると、他の端末ともデータが自動で同期されます。同じ設定をすべての端末で貼り付けてください。
+                  </p>
+                  <textarea
+                    value={fsConfigDraft}
+                    onChange={(e) => setFsConfigDraft(e.target.value)}
+                    rows={5}
+                    placeholder='{"apiKey": "...", "authDomain": "...", "projectId": "...", ...}'
+                    style={{ width: "100%", background: CARD2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 12px", color: TEXT, fontSize: 12, marginTop: 10, outline: "none", fontFamily: "monospace" }}
+                  />
+                  {fsError && <p style={{ color: "#D97757", fontSize: 11, marginTop: 6 }}>{fsError}</p>}
+                  <button onClick={handleConnectFirebase} disabled={fsConnecting} className="w-full py-2.5 rounded-xl mt-3" style={{ background: fsConnecting ? "#4A3C2C" : ACCENT, color: BG, fontSize: 13, fontWeight: 700 }}>
+                    {fsConnecting ? "接続中…" : "接続する"}
+                  </button>
+                </>
+              )}
+              {fsConnected && localBackup.length > 0 && (
+                <div className="rounded-xl p-3 mt-3" style={{ background: CARD2, border: `1px solid ${BORDER}` }}>
+                  <p style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>この端末にあった{localBackup.length}件のローカルデータをFirebaseへアップロードしますか？</p>
+                  <button onClick={migrateLocalToFirebase} className="w-full py-2 rounded-xl" style={{ background: ACCENT, color: BG, fontSize: 12.5, fontWeight: 700 }}>
+                    アップロードする
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -457,8 +631,9 @@ function App() {
                 </h1>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => { setKeyDraft(apiKey); setShowKeyModal(true); }} className="flex items-center justify-center rounded-full" style={{ width: 34, height: 34, background: CARD, border: `1px solid ${BORDER}`, color: MUTED, fontSize: 14 }} title="APIキー設定">
+                <button onClick={() => { setKeyDraft(apiKey); setShowKeyModal(true); }} className="flex items-center justify-center rounded-full relative" style={{ width: 34, height: 34, background: CARD, border: `1px solid ${BORDER}`, color: MUTED, fontSize: 14 }} title="設定">
                   ⚙
+                  {fsConnected && <span style={{ position: "absolute", top: -1, right: -1, width: 8, height: 8, borderRadius: "50%", background: ACCENT, border: `1.5px solid ${BG}` }} />}
                 </button>
                 <button onClick={startAdd} className="flex items-center gap-1 rounded-full" style={{ background: ACCENT, color: BG, fontWeight: 700, fontSize: 13, padding: "8px 14px" }}>
                   ＋ New
