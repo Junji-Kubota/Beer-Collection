@@ -13,7 +13,7 @@
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%231B1611'/%3E%3Ctext x='50' y='66' font-size='48' text-anchor='middle'%3E%F0%9F%8D%BA%3C/text%3E%3C/svg%3E" />
 <link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22Beer%20Book%22%2C%22short_name%22%3A%22Beer%20Book%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%231B1611%22%2C%22theme_color%22%3A%22%231B1611%22%7D" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
@@ -31,7 +31,7 @@ const { useState, useEffect, useMemo, useRef } = React;
 
 /* ============ 見た目の定数 ============ */
 const BG = "#1B1611", CARD = "#241D16", CARD2 = "#2E251B", BORDER = "#3A3024";
-const ACCENT = "#E8A33D", TEXT = "#F2E8D5", MUTED = "#A89A82", FAINT = "#7A6C56";
+const ACCENT = "#E8A33D", TEXT = "#F2E8D5", MUTED = "#A89A82", FAINT = "#7A6C56", LABEL = "#C9B896";
 
 /* ============ IndexedDBラッパー(window.storageの代わり) ============ */
 const DB_NAME = "beer_journal_db";
@@ -111,7 +111,7 @@ async function fetchBeerInfo({ name, photos, apiKey }) {
   "name": "ビール名(正式名称)",
   "brewery": "醸造所名",
   "style": "ビアスタイル(例: PALE ALE, IPA, STOUT/PORTER, LAGERS など英語表記)",
-  "region": "生産国または地域",
+  "region": "生産国。日本のビールの場合は「日本　地名」の形式で具体的な産地(都道府県や市町村)も併記する(例: 日本　安曇野、日本　長野県)。海外の場合は国名のみでよい(例: ベルギー、アメリカ)",
   "abv": "アルコール度数の数値のみ(例: 4.7)",
   "ibu": "IBU(苦味値)の数値のみ、不明なら空文字",
   "srm": "SRM値の数値のみ(例: 8)",
@@ -264,6 +264,7 @@ function App() {
   const [beers, setBeers] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("collection");
+  const [searchQuery, setSearchQuery] = useState("");
   const [screen, setScreen] = useState("list");
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
@@ -595,13 +596,21 @@ function App() {
 
   const detail = beers.find((b) => b.id === detailId);
 
+  const filteredBeers = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return beers;
+    return beers.filter((b) =>
+      [b.name, b.brewery, b.style, b.region].filter(Boolean).some((v) => v.toLowerCase().includes(q))
+    );
+  }, [beers, searchQuery]);
+
   return (
     <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontFamily: "'Work Sans', sans-serif", paddingBottom: 80 }}>
 
       {showKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{ background: "rgba(0,0,0,0.6)" }}>
           <div className="w-full rounded-2xl p-5 overflow-y-auto" style={{ background: CARD, border: `1px solid ${BORDER}`, maxWidth: 380, maxHeight: "85vh" }}>
-            <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 18 }}>Anthropic APIキー</h3>
+            <h3 style={{ fontWeight: 700, fontSize: 18 }}>Anthropic APIキー</h3>
             <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
               「自動取得」機能を使うには、ご自身のAnthropic APIキーが必要です。console.anthropic.com で発行できます。キーはこの端末のブラウザ内にのみ保存され、外部には送信されません。
             </p>
@@ -621,7 +630,7 @@ function App() {
             </div>
 
             <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 20, paddingTop: 16 }}>
-              <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16 }}>端末間の同期(Firebase)</h3>
+              <h3 style={{ fontWeight: 700, fontSize: 16 }}>端末間の同期(Firebase)</h3>
               {fsConnected ? (
                 <p style={{ fontSize: 12, color: ACCENT, marginTop: 6 }}>✓ 接続済み・自動で同期されています</p>
               ) : (
@@ -661,7 +670,7 @@ function App() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span style={{ fontSize: 22 }}>🍺</span>
-                <h1 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 24 }}>
+                <h1 style={{ fontWeight: 700, fontSize: 24 }}>
                   {tab === "collection" ? "Beer Book" : tab === "rating" ? "By Rating" : tab === "style" ? "By Style" : "Info"}
                 </h1>
               </div>
@@ -678,6 +687,17 @@ function App() {
             {beers.length > 0 && (
               <p style={{ color: MUTED, fontSize: 11, marginTop: 10 }}>{beers.length}杯 記録済み</p>
             )}
+            {tab === "collection" && beers.length > 0 && (
+              <div className="relative mt-3">
+                <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: FAINT, fontSize: 13 }}>🔍</span>
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="銘柄名・ブリューワリー・スタイルで検索"
+                  style={{ width: "100%", background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "10px 12px 10px 34px", color: TEXT, fontSize: 13.5, outline: "none" }}
+                />
+              </div>
+            )}
           </header>
 
           <main className="px-5">
@@ -686,21 +706,25 @@ function App() {
             {loaded && beers.length === 0 && tab !== "info" && (
               <div className="mt-16 text-center" style={{ color: FAINT }}>
                 <div style={{ fontSize: 40, opacity: 0.5, marginBottom: 12 }}>🍺</div>
-                <p style={{ fontFamily: "'Fraunces', serif", fontSize: 18, color: MUTED }}>まだ記録がありません</p>
+                <p style={{ fontSize: 18, color: MUTED }}>まだ記録がありません</p>
                 <p style={{ fontSize: 13, marginTop: 4 }}>右上の ＋New から最初の一杯を記録しましょう</p>
               </div>
             )}
 
-            {loaded && beers.length > 0 && tab === "collection" && (
+            {loaded && beers.length > 0 && tab === "collection" && filteredBeers.length === 0 && (
+              <p style={{ color: FAINT, fontSize: 13, textAlign: "center", marginTop: 40 }}>「{searchQuery}」に一致するビールが見つかりませんでした</p>
+            )}
+
+            {loaded && beers.length > 0 && tab === "collection" && filteredBeers.length > 0 && (
               <div className="grid grid-cols-2 gap-3">
-                {beers.map((b) => (
+                {filteredBeers.map((b) => (
                   <button key={b.id} onClick={() => openDetail(b.id)} className="text-left rounded-2xl overflow-hidden" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
                     <div className="w-full flex items-center justify-center" style={{ height: 100, background: CARD2 }}>
                       {b.photos && b.photos[0] ? <img src={b.photos[0]} alt={b.name} className="w-full h-full object-cover" /> : <span style={{ fontSize: 22 }}>🍺</span>}
                     </div>
                     <div className="p-2.5">
                       <EyebrowRow brewery={b.brewery} />
-                      <p className="truncate" style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 14.5, marginTop: 2 }}>{b.name}</p>
+                      <p className="truncate" style={{ fontWeight: 700, fontSize: 14.5, marginTop: 2 }}>{b.name}</p>
                       <div className="flex items-center justify-between" style={{ marginTop: 5 }}>
                         <span className="truncate" style={{ color: MUTED, fontSize: 9.5 }}>{[b.style, b.abv && `${b.abv}%`].filter(Boolean).join(" · ")}</span>
                         {b.price && <span style={{ color: FAINT, fontSize: 9.5, fontFamily: "monospace" }}>¥{b.price}</span>}
@@ -713,7 +737,7 @@ function App() {
 
             {loaded && beers.length > 0 && tab === "rating" && byRating.map((group) => (
               <div key={group.key} className="mb-5">
-                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 22, marginBottom: 8 }}>{group.key}</h2>
+                <h2 style={{ marginBottom: 8 }}><StarRating value={Number(group.key)} size={20} /></h2>
                 <div className="flex flex-col">
                   {group.items.map((b) => (
                     <button key={b.id} onClick={() => openDetail(b.id)} className="flex items-center gap-3 py-3 text-left" style={{ borderBottom: `1px solid ${BORDER}` }}>
@@ -733,7 +757,7 @@ function App() {
 
             {loaded && beers.length > 0 && tab === "style" && byStyle.map((group) => (
               <div key={group.key} className="mb-5">
-                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 18, marginBottom: 8, color: ACCENT }}>{group.key}</h2>
+                <h2 style={{ fontWeight: 700, fontSize: 18, marginBottom: 8, color: ACCENT }}>{group.key}</h2>
                 <div className="flex flex-col">
                   {group.items.map((b) => (
                     <button key={b.id} onClick={() => openDetail(b.id)} className="flex items-center gap-3 py-3 text-left" style={{ borderBottom: `1px solid ${BORDER}` }}>
@@ -753,7 +777,7 @@ function App() {
 
             {loaded && tab === "info" && (
               <div className="pb-6">
-                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16, marginBottom: 8, color: ACCENT }}>LINKS</h2>
+                <h2 style={{ fontWeight: 700, fontSize: 16, marginBottom: 8, color: ACCENT }}>LINKS</h2>
                 <div className="flex flex-col gap-2 mb-3">
                   {infoLinks.map((l) => (
                     <div key={l.id} className="flex items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
@@ -770,7 +794,7 @@ function App() {
                   </div>
                 </div>
 
-                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16, marginBottom: 8, color: ACCENT }}>IMAGES</h2>
+                <h2 style={{ fontWeight: 700, fontSize: 16, marginBottom: 8, color: ACCENT }}>IMAGES</h2>
                 <div className="flex flex-col gap-3 mb-3">
                   {infoImages.map((img) => (
                     <div key={img.id} className="rounded-xl overflow-hidden" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
@@ -787,7 +811,7 @@ function App() {
                   <input type="file" accept="image/*" onChange={addInfoImage} className="hidden" />
                 </label>
 
-                <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 16, marginBottom: 8, color: ACCENT }}>MEMO</h2>
+                <h2 style={{ fontWeight: 700, fontSize: 16, marginBottom: 8, color: ACCENT }}>MEMO</h2>
                 <div className="rounded-xl p-3 mb-3" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
                   <textarea value={newNote} onChange={(e) => setNewNote(e.target.value)} rows={3} placeholder="気づいたことを自由にメモ" style={{ ...inputStyle, resize: "vertical" }} />
                   <button onClick={addInfoNote} className="mt-2 py-2 w-full rounded-xl" style={{ background: ACCENT, color: BG, fontWeight: 700, fontSize: 13 }}>＋ メモを追加</button>
@@ -826,10 +850,10 @@ function App() {
           )}
           <div className="px-5 pt-5">
             <p style={{ color: ACCENT, fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" }}>{(detail.brewery || "不明").toUpperCase()}</p>
-            <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 26, marginTop: 2 }}>{detail.name}</h2>
+            <h2 style={{ fontWeight: 700, fontSize: 26, marginTop: 2 }}>{detail.name}</h2>
             {detail.impression && <p style={{ color: MUTED, fontSize: 14, marginTop: 8, lineHeight: 1.6 }}>{detail.impression}</p>}
             <button onClick={() => startEdit(detail)} className="flex items-center gap-1.5 mt-4" style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>✎ Edit</button>
-            <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 18, marginTop: 20, marginBottom: 8 }}>Details</h3>
+            <h3 style={{ fontWeight: 700, fontSize: 18, marginTop: 20, marginBottom: 8 }}>Details</h3>
             <div className="grid grid-cols-2 gap-2">
               <Chip full label="RATING">
                 <div className="flex items-center gap-2 mt-0.5">
@@ -837,15 +861,16 @@ function App() {
                   <span style={{ color: MUTED, fontSize: 12 }}>{detail.rank || 0}/5</span>
                 </div>
               </Chip>
+              <Chip label="BREWERY" value={detail.brewery || "—"} />
               <Chip label="STYLE" value={detail.style || "—"} />
               <Chip label="REGION" value={detail.region || "—"} />
               <Chip label="ABV" value={detail.abv ? `${detail.abv}%` : "—"} />
               <Chip label="IBU" value={detail.ibu || "—"} />
               <Chip label="COLOR" swatch={detail.srm} value={detail.colorLabel ? `${detail.colorLabel}${detail.srm ? ` (${detail.srm} SRM)` : ""}` : "—"} />
               <Chip label="ADJUNCTS" value={detail.adjuncts || "—"} />
-              <Chip label="購入場所" value={detail.purchasePlace || "—"} />
-              <Chip label="価格" value={detail.price ? `¥${detail.price}` : "—"} />
-              <Chip label="日時" value={detail.datetime ? new Date(detail.datetime).toLocaleString("ja-JP") : "—"} />
+              <Chip label="PLACE" value={detail.purchasePlace || "—"} />
+              <Chip label="PRICE" value={detail.price ? `¥${detail.price}` : "—"} />
+              <Chip label="DATE" value={detail.datetime ? new Date(detail.datetime).toLocaleString("ja-JP") : "—"} />
               <Chip full label="WEBSITE">
                 {detail.website ? <a href={detail.website} target="_blank" rel="noreferrer" style={{ color: ACCENT, fontSize: 13, fontWeight: 600 }}>{detail.website}</a> : <span style={{ fontSize: 13, fontWeight: 600 }}>—</span>}
               </Chip>
@@ -858,7 +883,7 @@ function App() {
       {screen === "form" && (
         <div className="px-5 pt-6">
           <button onClick={() => setScreen("list")} className="flex items-center gap-1 mb-4" style={{ color: MUTED, fontSize: 13 }}>‹ 戻る</button>
-          <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 20 }} className="mb-4">{editingId ? "記録を編集" : "新しい一杯を記録"}</h2>
+          <h2 style={{ fontWeight: 700, fontSize: 20 }} className="mb-4">{editingId ? "記録を編集" : "新しい一杯を記録"}</h2>
           <div className="flex flex-col gap-4">
             <div>
               <label style={{ fontSize: 12, color: MUTED, display: "block", marginBottom: 6 }}>写真(最大3枚・1枚目がメイン)</label>
@@ -937,13 +962,23 @@ function App() {
           <TabButton icon="▦" label="Collection" active={tab === "collection"} onClick={() => setTab("collection")} />
           <TabButton icon="★" label="Rating" active={tab === "rating"} onClick={() => setTab("rating")} />
           <TabButton icon="≡" label="Style" active={tab === "style"} onClick={() => setTab("style")} />
-          <TabButton icon="ℹ" label="Info" active={tab === "info"} onClick={() => setTab("info")} />
+          <TabButton icon={<InfoIcon />} label="Info" active={tab === "info"} onClick={() => setTab("info")} />
         </nav>
       )}
     </div>
   );
 }
 
+function InfoIcon() {
+  return (
+    <span
+      className="flex items-center justify-center"
+      style={{ width: 17, height: 17, borderRadius: "50%", border: "1.6px solid currentColor", fontSize: 11.5, fontWeight: 800, fontStyle: "italic", fontFamily: "Georgia, serif", lineHeight: 1 }}
+    >
+      i
+    </span>
+  );
+}
 function TabButton({ icon, label, active, onClick }) {
   return (
     <button onClick={onClick} className="flex flex-col items-center gap-1" style={{ color: active ? ACCENT : MUTED }}>
@@ -954,19 +989,19 @@ function TabButton({ icon, label, active, onClick }) {
 }
 function Chip({ label, value, children, full, swatch }) {
   return (
-    <div className={"rounded-xl p-2.5" + (full ? " col-span-2" : "")} style={{ background: CARD, border: `1px solid ${BORDER}` }}>
-      <div className="flex items-center gap-1.5" style={{ color: FAINT, fontSize: 9.5, letterSpacing: "0.03em" }}>
-        {swatch !== undefined && <span style={{ width: 9, height: 9, borderRadius: 3, background: srmToHex(swatch), border: `1px solid ${BORDER}`, display: "inline-block" }} />}
+    <div className={"rounded-2xl p-4" + (full ? " col-span-2" : "")} style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+      <div className="flex items-center gap-1.5" style={{ color: LABEL, fontSize: 12.5, fontWeight: 600, letterSpacing: "0.03em" }}>
+        {swatch !== undefined && <span style={{ width: 11, height: 11, borderRadius: 4, background: srmToHex(swatch), border: `1px solid ${BORDER}`, display: "inline-block" }} />}
         {label}
       </div>
-      {children ? children : <p style={{ fontSize: 13, fontWeight: 600, marginTop: 3 }}>{value}</p>}
+      {children ? children : <p style={{ fontSize: 19, fontWeight: 700, marginTop: 5, lineHeight: 1.25 }}>{value}</p>}
     </div>
   );
 }
 function Field({ label, children }) {
   return (
     <div>
-      <label style={{ fontSize: 12, color: MUTED, display: "block", marginBottom: 6 }}>{label}</label>
+      <label style={{ fontSize: 12.5, color: LABEL, fontWeight: 600, display: "block", marginBottom: 6 }}>{label}</label>
       {children}
     </div>
   );
