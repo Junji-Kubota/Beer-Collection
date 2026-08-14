@@ -87,20 +87,35 @@ function compressImage(file, maxWidth = 380, quality = 0.55) {
 }
 
 /* ============ 自分のAPIキーでClaudeに直接問い合わせ(ブラウザから直接) ============ */
-async function fetchBeerInfo(name, apiKey) {
-  const prompt = `あなたはクラフトビールのデータベース調査アシスタントです。ビール名「${name}」について、Web検索を使って以下の情報を調べ、JSONのみを出力してください（説明文やコードフェンスは一切不要）。
-
-出力形式(すべて日本語、値が不明な場合は空文字 "" にする):
+/* 写真(ラベル)がある場合はラベルを読み取ってビール名も含めて推定する。
+   写真が無い場合は入力済みのビール名だけを手がかりにWeb検索する。 */
+async function fetchBeerInfo({ name, photo, apiKey }) {
+  const schemaText = `出力形式(すべて日本語、値が不明な場合は空文字 "" にする):
 {
+  "name": "ビール名(正式名称)",
   "brewery": "醸造所名",
   "style": "ビアスタイル(例: PALE ALE, IPA, STOUT/PORTER, LAGERS など英語表記)",
   "region": "生産国または地域",
   "abv": "アルコール度数の数値のみ(例: 4.7)",
+  "ibu": "IBU(苦味値)の数値のみ、不明なら空文字",
   "srm": "SRM値の数値のみ(例: 8)",
   "colorLabel": "色の簡潔な日本語表現(例: 非常に淡い, 淡い, 琥珀色, 濃い茶色, 黒に近い)",
   "adjuncts": "副原料があれば列挙、なければ特になし",
   "website": "公式サイトのURL、不明なら空文字"
 }`;
+
+  let content;
+  if (photo) {
+    const base64 = photo.split(",")[1] || "";
+    const mediaMatch = photo.match(/^data:([^;]+);/);
+    const mediaType = mediaMatch ? mediaMatch[1] : "image/jpeg";
+    content = [
+      { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+      { type: "text", text: `この画像はクラフトビールのボトルまたは缶のラベル写真です。ラベルからビール名・ブリューワリー名を読み取り、Web検索でその他の情報を調べてJSONのみを出力してください（説明文やコードフェンスは一切不要）。${name ? `参考: ユーザーは「${name}」という名前を入力しています。これも手がかりにしてください。` : ""}\n\n${schemaText}` },
+    ];
+  } else {
+    content = `あなたはクラフトビールのデータベース調査アシスタントです。ビール名「${name}」について、Web検索を使って以下の情報を調べ、JSONのみを出力してください（説明文やコードフェンスは一切不要）。\n\n${schemaText}`;
+  }
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -112,8 +127,8 @@ async function fetchBeerInfo(name, apiKey) {
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1000,
-      messages: [{ role: "user", content: prompt }],
+      max_tokens: 1200,
+      messages: [{ role: "user", content }],
       tools: [{ type: "web_search_20250305", name: "web_search" }],
     }),
   });
@@ -170,9 +185,22 @@ function EyebrowRow({ brewery, style }) {
   );
 }
 
+const SRM_STOPS = [
+  [2, "#F3F993"], [4, "#F6F900"], [6, "#EAC100"], [9, "#E0A200"],
+  [12, "#D5793A"], [15, "#C26128"], [18, "#A9491E"], [22, "#8D3319"],
+  [26, "#6C2416"], [30, "#5A1E15"], [35, "#3F1710"], [40, "#1F0D0B"],
+];
+function srmToHex(srm) {
+  const v = parseFloat(srm);
+  if (isNaN(v)) return "#E8DFC8";
+  for (const [stopV, hex] of SRM_STOPS) { if (v <= stopV) return hex; }
+  return "#1F0D0B";
+}
+
 const EMPTY_FORM = {
   name: "", photo: "", datetime: "", impression: "", rank: 3,
-  brewery: "", style: "", region: "", abv: "", srm: "", colorLabel: "", adjuncts: "", website: "",
+  brewery: "", style: "", region: "", abv: "", ibu: "", srm: "", colorLabel: "", adjuncts: "", website: "",
+  purchasePlace: "", price: "",
 };
 
 function App() {
@@ -235,18 +263,20 @@ function App() {
   }
 
   async function handleAutoFetch() {
-    if (!form.name.trim()) { setError("先にビール名を入力してください。"); return; }
+    if (!form.name.trim() && !form.photo) { setError("先に写真を選ぶか、ビール名を入力してください。"); return; }
     if (!apiKey) { setShowKeyModal(true); return; }
     setFetching(true);
     setError("");
     try {
-      const info = await fetchBeerInfo(form.name.trim(), apiKey);
+      const info = await fetchBeerInfo({ name: form.name.trim(), photo: form.photo, apiKey });
       setForm((f) => ({
         ...f,
+        name: f.name.trim() ? f.name : (info.name || f.name),
         brewery: info.brewery || f.brewery,
         style: info.style || f.style,
         region: info.region || f.region,
         abv: info.abv || f.abv,
+        ibu: info.ibu || f.ibu,
         srm: info.srm || f.srm,
         colorLabel: info.colorLabel || f.colorLabel,
         adjuncts: info.adjuncts || f.adjuncts,
@@ -363,12 +393,16 @@ function App() {
               <div className="grid grid-cols-2 gap-3">
                 {beers.map((b) => (
                   <button key={b.id} onClick={() => openDetail(b.id)} className="text-left rounded-2xl overflow-hidden" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
-                    <div className="w-full flex items-center justify-center" style={{ height: 110, background: CARD2 }}>
+                    <div className="w-full flex items-center justify-center" style={{ height: 100, background: CARD2 }}>
                       {b.photo ? <img src={b.photo} alt={b.name} className="w-full h-full object-cover" /> : <span style={{ fontSize: 22 }}>🍺</span>}
                     </div>
                     <div className="p-2.5">
                       <EyebrowRow brewery={b.brewery} />
-                      <p className="truncate" style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 15, marginTop: 2 }}>{b.name}</p>
+                      <p className="truncate" style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 14.5, marginTop: 2 }}>{b.name}</p>
+                      <div className="flex items-center justify-between" style={{ marginTop: 5 }}>
+                        <span className="truncate" style={{ color: MUTED, fontSize: 9.5 }}>{[b.style, b.abv && `${b.abv}%`].filter(Boolean).join(" · ")}</span>
+                        {b.price && <span style={{ color: FAINT, fontSize: 9.5, fontFamily: "monospace" }}>¥{b.price}</span>}
+                      </div>
                     </div>
                   </button>
                 ))}
@@ -429,17 +463,26 @@ function App() {
             <h2 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 26, marginTop: 2 }}>{detail.name}</h2>
             {detail.impression && <p style={{ color: MUTED, fontSize: 14, marginTop: 8, lineHeight: 1.6 }}>{detail.impression}</p>}
             <button onClick={() => startEdit(detail)} className="flex items-center gap-1.5 mt-4" style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>✎ Edit</button>
-            <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 18, marginTop: 20, marginBottom: 4 }}>Details</h3>
-            <div>
-              <DetailRow label="Rating" value={<BeerGauge value={detail.rank} size={20} />} isNode />
-              <DetailRow label="日時" value={detail.datetime ? new Date(detail.datetime).toLocaleString("ja-JP") : "—"} />
-              <DetailRow label="Region" value={detail.region || "—"} />
-              <DetailRow label="Style" value={detail.style || "—"} />
-              <DetailRow label="Brewery" value={detail.brewery || "—"} />
-              <DetailRow label="Color" value={detail.colorLabel ? `${detail.colorLabel}${detail.srm ? ` (${detail.srm} SRM)` : ""}` : "—"} />
-              <DetailRow label="ABV" value={detail.abv ? `${detail.abv}%` : "—"} />
-              <DetailRow label="Adjuncts" value={detail.adjuncts || "—"} />
-              <DetailRow label="Website" isNode value={detail.website ? <a href={detail.website} target="_blank" rel="noreferrer" style={{ color: ACCENT }}>{detail.website}</a> : "—"} />
+            <h3 style={{ fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: 18, marginTop: 20, marginBottom: 8 }}>Details</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <Chip full label="RATING">
+                <div className="flex items-center gap-2 mt-0.5">
+                  <BeerGauge value={detail.rank} size={20} />
+                  <span style={{ color: MUTED, fontSize: 12 }}>{detail.rank || 0}/5</span>
+                </div>
+              </Chip>
+              <Chip label="STYLE" value={detail.style || "—"} />
+              <Chip label="REGION" value={detail.region || "—"} />
+              <Chip label="ABV" value={detail.abv ? `${detail.abv}%` : "—"} />
+              <Chip label="IBU" value={detail.ibu || "—"} />
+              <Chip label="COLOR" swatch={detail.srm} value={detail.colorLabel ? `${detail.colorLabel}${detail.srm ? ` (${detail.srm} SRM)` : ""}` : "—"} />
+              <Chip label="ADJUNCTS" value={detail.adjuncts || "—"} />
+              <Chip label="購入場所" value={detail.purchasePlace || "—"} />
+              <Chip label="価格" value={detail.price ? `¥${detail.price}` : "—"} />
+              <Chip label="日時" value={detail.datetime ? new Date(detail.datetime).toLocaleString("ja-JP") : "—"} />
+              <Chip full label="WEBSITE">
+                {detail.website ? <a href={detail.website} target="_blank" rel="noreferrer" style={{ color: ACCENT, fontSize: 13, fontWeight: 600 }}>{detail.website}</a> : <span style={{ fontSize: 13, fontWeight: 600 }}>—</span>}
+              </Chip>
             </div>
             <button onClick={() => handleDelete(detail.id)} className="flex items-center justify-center gap-1.5 w-full py-3 rounded-xl mt-6 mb-4" style={{ border: "1px solid #5A2E22", color: "#D97757", fontSize: 13, fontWeight: 700 }}>🗑 削除する</button>
           </div>
@@ -461,15 +504,15 @@ function App() {
               <input type="file" accept="image/*" onChange={handlePhoto} className="hidden" />
             </label>
 
-            <Field label="ビール名 *">
+            <Field label="ビール名">
               <div className="flex gap-2">
-                <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例: よなよなエール" style={inputStyle} />
+                <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="写真があれば空欄でもOK" style={inputStyle} />
                 <button onClick={handleAutoFetch} disabled={fetching} className="shrink-0 rounded-xl flex items-center justify-center gap-1.5 px-3" style={{ background: fetching ? "#4A3C2C" : ACCENT, color: BG, fontWeight: 700, fontSize: 12.5 }}>
                   {fetching ? "…" : "自動取得"}
                 </button>
               </div>
               <p style={{ fontSize: 11, color: FAINT, marginTop: 4 }}>
-                {apiKey ? "ビール名を入力して「自動取得」を押すと、ブリューワリー・スタイル・色・度数などをネットで調べて自動入力します。" : "自動取得には右上の⚙からAPIキーの登録が必要です。"}
+                {apiKey ? "写真のラベルを読み取ってビール名ごと自動推定します。ビール名だけ手入力してもOKです。" : "自動取得には右上の⚙からAPIキーの登録が必要です。"}
               </p>
             </Field>
 
@@ -486,6 +529,11 @@ function App() {
               <textarea value={form.impression} onChange={(e) => setForm({ ...form, impression: e.target.value })} rows={4} placeholder="香り、味わい、余韻など" style={{ ...inputStyle, resize: "vertical" }} />
             </Field>
 
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="購入場所・店"><input value={form.purchasePlace} onChange={(e) => setForm({ ...form, purchasePlace: e.target.value })} placeholder="例: 成城石井" style={inputStyle} /></Field>
+              <Field label="価格(円)"><input value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} placeholder="例: 480" style={inputStyle} /></Field>
+            </div>
+
             <div className="rounded-xl p-3" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
               <p style={{ fontSize: 11, color: FAINT, marginBottom: 10 }}>自動取得した項目(手動で修正も可能です)</p>
               <div className="grid grid-cols-2 gap-3">
@@ -493,6 +541,7 @@ function App() {
                 <Field label="スタイル"><input value={form.style} onChange={(e) => setForm({ ...form, style: e.target.value })} style={inputStyle} /></Field>
                 <Field label="地域"><input value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} style={inputStyle} /></Field>
                 <Field label="度数(%)"><input value={form.abv} onChange={(e) => setForm({ ...form, abv: e.target.value })} style={inputStyle} /></Field>
+                <Field label="IBU(苦味値)"><input value={form.ibu} onChange={(e) => setForm({ ...form, ibu: e.target.value })} style={inputStyle} /></Field>
                 <Field label="色(SRM)"><input value={form.srm} onChange={(e) => setForm({ ...form, srm: e.target.value })} style={inputStyle} /></Field>
                 <Field label="色の説明"><input value={form.colorLabel} onChange={(e) => setForm({ ...form, colorLabel: e.target.value })} style={inputStyle} /></Field>
               </div>
@@ -528,11 +577,14 @@ function TabButton({ icon, label, active, onClick }) {
     </button>
   );
 }
-function DetailRow({ label, value, isNode }) {
+function Chip({ label, value, children, full, swatch }) {
   return (
-    <div className="flex items-center justify-between py-3" style={{ borderBottom: `1px solid ${BORDER}` }}>
-      <span style={{ color: MUTED, fontSize: 14 }}>{label}</span>
-      {isNode ? value : <span style={{ fontSize: 14, fontWeight: 500, textAlign: "right" }}>{value}</span>}
+    <div className={"rounded-xl p-2.5" + (full ? " col-span-2" : "")} style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+      <div className="flex items-center gap-1.5" style={{ color: FAINT, fontSize: 9.5, letterSpacing: "0.03em" }}>
+        {swatch !== undefined && <span style={{ width: 9, height: 9, borderRadius: 3, background: srmToHex(swatch), border: `1px solid ${BORDER}`, display: "inline-block" }} />}
+        {label}
+      </div>
+      {children ? children : <p style={{ fontSize: 13, fontWeight: 600, marginTop: 3 }}>{value}</p>}
     </div>
   );
 }
