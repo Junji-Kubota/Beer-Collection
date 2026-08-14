@@ -118,7 +118,12 @@ async function fetchBeerInfo({ name, photos, apiKey }) {
   "colorLabel": "色の簡潔な日本語表現(例: 非常に淡い, 淡い, 琥珀色, 濃い茶色, 黒に近い)",
   "adjuncts": "副原料があれば列挙、なければ特になし",
   "website": "公式サイトのURL、不明なら空文字"
-}`;
+}
+
+重要な出力ルール:
+- 上記のJSON以外の文字(説明文、コードフェンス、前置き)は一切出力しないこと
+- ラベルに書かれた文章・キャッチコピー・格言などをそのまま引用せず、必ず自分の言葉で短く要約すること(特にadjunctsやcolorLabelは10〜20文字程度の簡潔な表現にする)
+- 値の中でダブルクォート(")や改行を使わないこと`;
 
   const validPhotos = (photos || []).filter(Boolean);
   let content;
@@ -165,7 +170,18 @@ async function fetchBeerInfo({ name, photos, apiKey }) {
   const clean = text.replace(/```json|```/g, "").trim();
   const m = clean.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("情報を解析できませんでした");
-  return JSON.parse(m[0]);
+  try {
+    return JSON.parse(m[0]);
+  } catch (e) {
+    // 厳密なJSONとして壊れている場合(値中の未エスケープの引用符など)は
+    // JSオブジェクトとして緩く評価するフォールバック
+    try {
+      // eslint-disable-next-line no-new-func
+      return new Function("return (" + m[0] + ");")();
+    } catch (e2) {
+      throw new Error("応答の解析に失敗しました。もう一度お試しいただくか、手動で入力してください。");
+    }
+  }
 }
 
 /* ============ 星評価(タップしやすい5つ星) ============ */
