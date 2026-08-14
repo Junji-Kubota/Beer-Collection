@@ -337,18 +337,37 @@ function App() {
     })();
   }, []);
 
+  // Firebaseコンソールのコピペ(JSリテラル形式・キー未クォート)や
+  // 「const firebaseConfig = {...};」ごとの貼り付けにも対応した緩いパーサー
+  function parseFirebaseConfig(text) {
+    const trimmed = text.trim();
+    try {
+      return JSON.parse(trimmed);
+    } catch (e) {
+      const start = trimmed.indexOf("{");
+      const end = trimmed.lastIndexOf("}");
+      if (start === -1 || end === -1 || end < start) {
+        throw new Error("設定の中に { } で囲まれた部分が見つかりませんでした。");
+      }
+      const body = trimmed.slice(start, end + 1);
+      // eslint-disable-next-line no-new-func
+      return new Function("return (" + body + ");")();
+    }
+  }
+
   async function handleConnectFirebase() {
     setFsError("");
     setFsConnecting(true);
     try {
-      const config = JSON.parse(fsConfigDraft);
+      const config = parseFirebaseConfig(fsConfigDraft);
+      if (!config || !config.projectId) throw new Error("projectId が見つかりません。貼り付けた内容をご確認ください。");
       setLocalBackup(beers);
       await connectFirebase(config);
       localStorage.setItem("firebase_config", JSON.stringify(config));
       setFsConnected(true);
       attachFirestoreListeners();
     } catch (e) {
-      setFsError("接続に失敗しました。貼り付けた設定(JSON)をご確認ください。詳細: " + e.message);
+      setFsError("接続に失敗しました。貼り付けた設定をご確認ください。詳細: " + e.message);
     } finally {
       setFsConnecting(false);
     }
@@ -592,7 +611,7 @@ function App() {
               ) : (
                 <>
                   <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
-                    Firebaseの設定(firebaseConfig)を貼り付けると、他の端末ともデータが自動で同期されます。同じ設定をすべての端末で貼り付けてください。
+                    Firebaseの設定(firebaseConfig)を貼り付けると、他の端末ともデータが自動で同期されます。Firebaseコンソールに表示された<code style={{ fontSize: 11 }}>{"{ apiKey: ... }"}</code>の部分をそのままコピペしてOKです(前後にconstなどが付いていても構いません)。同じ設定をすべての端末で貼り付けてください。
                   </p>
                   <textarea
                     value={fsConfigDraft}
