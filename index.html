@@ -163,7 +163,17 @@ async function fetchBeerInfo({ name, photos, apiKey }) {
     });
     content = [
       ...imageBlocks,
-      { type: "text", text: `これらの画像はクラフトビールの写真です。写真には、ボトルや缶そのものに加えて、注がれたグラスが一緒に写っている場合があります。\n\n最重要ルール: 判断の根拠にするのは必ず「ボトル・缶に貼られたラベル」の文字情報のみです。グラスの側面に印字・彫刻されているロゴやブランド名(多くの場合、そのグラスを製造・提供している別の醸造所やバーのノベルティであり、中身のビールとは無関係です)は絶対に参照しないでください。ボトルや缶が写っていない場合のみ、グラス以外の手がかり(液体の色など)を参考にしつつ、その旨を踏まえて推測してください。\n\nボトル・缶のラベルからビール名・ブリューワリー名を読み取り、Web検索でその他の情報を調べてJSONのみを出力してください（説明文やコードフェンスは一切不要）。${name ? `参考: ユーザーは「${name}」という名前を入力しています。これも手がかりにしてください。` : ""}\n\n${schemaText}` },
+      { type: "text", text: `これらの画像はクラフトビールの写真です(最大3枚、正面ラベル・背面の成分表示・注がれたグラスなどが混在している場合があります)。
+
+最重要ルール:
+- 判断の根拠にするのは必ず「ボトル・缶そのものに貼られたラベル」の文字情報です。グラスの側面に印字・彫刻されているロゴやブランド名(多くの場合、そのグラスを製造・提供している別の醸造所やバーのノベルティであり、中身のビールとは無関係)は絶対に参照しないでください。
+- 複数枚のうち、ボトル/缶の正面(ブランド名・商品名)が写っている写真を優先してビール名・ブリューワリー名を特定してください。
+- 背面などにある「原材料名」「成分表示」のラベルが写っている写真があれば、そこに記載の原材料(モルト、ホップ、副原料など)を読み取り、adjunctsフィールドに反映してください。
+- ボトルや缶が1枚も写っていない場合のみ、グラス内の液体の色など他の手がかりを参考にしつつ、その旨を踏まえて推測してください。
+
+これらを踏まえてビール名・ブリューワリー名を読み取り、Web検索でその他の情報を調べてJSONのみを出力してください（説明文やコードフェンスは一切不要）。${name ? `参考: ユーザーは「${name}」という名前を入力しています。これも手がかりにしてください。` : ""}
+
+${schemaText}` },
     ];
   } else {
     content = `あなたはクラフトビールのデータベース調査アシスタントです。ビール名「${name}」について、Web検索を使って以下の情報を調べ、JSONのみを出力してください（説明文やコードフェンスは一切不要）。\n\n${schemaText}`;
@@ -705,6 +715,14 @@ function App() {
       setError("画像の処理に失敗しました。別の写真でお試しください。");
     }
   }
+  function setMainPhoto(index) {
+    if (index === 0) return;
+    setForm((f) => {
+      const photos = [...f.photos];
+      [photos[0], photos[index]] = [photos[index], photos[0]];
+      return { ...f, photos };
+    });
+  }
 
   const byRating = useMemo(() => {
     const groups = {};
@@ -1028,7 +1046,19 @@ function App() {
                 {detail.website ? <a href={detail.website} target="_blank" rel="noreferrer" style={{ color: ACCENT, fontSize: 13, fontWeight: 600 }}>{detail.website}</a> : <span style={{ fontSize: 13, fontWeight: 600 }}>—</span>}
               </Chip>
             </div>
-            <button onClick={() => handleDelete(detail.id)} className="flex items-center justify-center gap-1.5 w-full py-3 rounded-xl mt-6 mb-4" style={{ border: "1px solid #5A2E22", color: "#D97757", fontSize: 13, fontWeight: 700 }}>🗑 削除する</button>
+            <div className="flex justify-center mt-6 mb-4">
+              <button
+                onClick={() => {
+                  if (window.confirm(`「${detail.name}」を削除します。この操作は取り消せません。よろしいですか？`)) {
+                    handleDelete(detail.id);
+                  }
+                }}
+                className="flex items-center justify-center gap-1 rounded-lg"
+                style={{ border: "1px solid #5A2E22", color: "#D97757", fontSize: 11, fontWeight: 600, padding: "6px 14px" }}
+              >
+                🗑 削除する
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1039,20 +1069,39 @@ function App() {
           <h2 style={{ fontWeight: 700, fontSize: 20 }} className="mb-4">{editingId ? "記録を編集" : "新しい一杯を記録"}</h2>
           <div className="flex flex-col gap-4">
             <div>
-              <label style={{ fontSize: 12, color: MUTED, display: "block", marginBottom: 6 }}>写真(最大3枚・1枚目がメイン)</label>
+              <label style={{ fontSize: 12, color: MUTED, display: "block", marginBottom: 6 }}>写真(最大3枚・タップでメイン写真に切替)</label>
               <div className="grid grid-cols-3 gap-2">
                 {[0, 1, 2].map((i) => (
-                  <label key={i} className="rounded-2xl flex items-center justify-center overflow-hidden cursor-pointer relative" style={{ height: 100, background: CARD, border: i === 0 ? `1.5px solid ${ACCENT}` : "1px dashed #4A3C2C" }}>
-                    {form.photos[i] ? (
+                  form.photos[i] ? (
+                    <div
+                      key={i}
+                      onClick={() => setMainPhoto(i)}
+                      className="rounded-2xl overflow-hidden relative cursor-pointer"
+                      style={{ height: 100, background: CARD, border: i === 0 ? `1.5px solid ${ACCENT}` : `1px solid ${BORDER}` }}
+                    >
                       <img src={form.photos[i]} className="w-full h-full object-cover" alt={`preview-${i}`} />
-                    ) : (
+                      {i === 0 && (
+                        <span style={{ position: "absolute", top: 4, left: 4, background: ACCENT, color: BG, fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 999 }}>MAIN</span>
+                      )}
+                      <label
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center justify-center cursor-pointer"
+                        style={{ position: "absolute", bottom: 4, right: 4, width: 22, height: 22, borderRadius: "50%", background: "rgba(27,22,17,0.75)", color: TEXT, fontSize: 11 }}
+                        title="この写真を変更"
+                      >
+                        ✎
+                        <input type="file" accept="image/*" onChange={(e) => handlePhoto(i, e)} className="hidden" />
+                      </label>
+                    </div>
+                  ) : (
+                    <label key={i} className="rounded-2xl flex items-center justify-center overflow-hidden cursor-pointer relative" style={{ height: 100, background: CARD, border: "1px dashed #4A3C2C" }}>
                       <div className="flex flex-col items-center gap-1" style={{ color: FAINT }}>
                         <span style={{ fontSize: 16 }}>📷</span>
                         <span style={{ fontSize: 10 }}>{i === 0 ? "メイン" : `写真${i + 1}`}</span>
                       </div>
-                    )}
-                    <input type="file" accept="image/*" onChange={(e) => handlePhoto(i, e)} className="hidden" />
-                  </label>
+                      <input type="file" accept="image/*" onChange={(e) => handlePhoto(i, e)} className="hidden" />
+                    </label>
+                  )
                 ))}
               </div>
             </div>
