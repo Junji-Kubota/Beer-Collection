@@ -306,6 +306,7 @@ function App() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
   const [detailId, setDetailId] = useState(null);
+  const [activePhotoIndex, setActivePhotoIndex] = useState(0);
   const [error, setError] = useState("");
   const [fetching, setFetching] = useState(false);
   const [apiKey, setApiKey] = useState("");
@@ -643,6 +644,7 @@ function App() {
   }
   function openDetail(id) {
     setDetailId(id);
+    setActivePhotoIndex(0);
     setScreen("detail");
   }
 
@@ -702,13 +704,15 @@ function App() {
     setScreen("list");
   }
   async function handlePhoto(index, e) {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     try {
-      const compressed = await compressImage(file);
+      const compressedList = await Promise.all(files.slice(0, 3 - index).map((f) => compressImage(f)));
       setForm((f) => {
         const photos = [...f.photos];
-        photos[index] = compressed;
+        compressedList.forEach((c, offset) => {
+          if (index + offset < 3) photos[index + offset] = c;
+        });
         return { ...f, photos };
       });
     } catch (err) {
@@ -887,17 +891,17 @@ function App() {
             )}
 
             {loaded && beers.length > 0 && tab === "collection" && filteredBeers.length > 0 && (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
                 {filteredBeers.map((b) => (
                   <button key={b.id} onClick={() => openDetail(b.id)} className="text-left rounded-2xl overflow-hidden" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
-                    <div className="w-full flex items-center justify-center" style={{ height: 100, background: CARD2 }}>
+                    <div className="w-full aspect-square flex items-center justify-center" style={{ background: CARD2 }}>
                       {b.photos && b.photos[0] ? <img src={b.photos[0]} alt={b.name} className="w-full h-full object-cover" /> : <span style={{ fontSize: 22 }}>🍺</span>}
                     </div>
                     <div className="p-2.5">
                       <EyebrowRow brewery={b.brewery} />
                       <p className="truncate" style={{ fontWeight: 700, fontSize: 14.5, marginTop: 2 }}>{b.name}</p>
                       <div className="flex items-center justify-between" style={{ marginTop: 5 }}>
-                        <span className="truncate" style={{ color: MUTED, fontSize: 9.5 }}>{[b.style, b.abv && `${b.abv}%`].filter(Boolean).join(" · ")}</span>
+                        <span className="truncate" style={{ color: MUTED, fontSize: 9.5 }}>{[b.style, b.region].filter(Boolean).join(" · ")}</span>
                         {b.price && <span style={{ color: FAINT, fontSize: 9.5, fontFamily: "monospace" }}>¥{b.price}</span>}
                       </div>
                     </div>
@@ -1008,14 +1012,21 @@ function App() {
         <div>
           <div className="relative w-full flex items-center justify-center" style={{ height: 260, background: CARD2 }}>
             <button onClick={() => setScreen("list")} className="absolute top-5 left-5 rounded-full flex items-center justify-center" style={{ width: 36, height: 36, background: "rgba(27,22,17,0.6)", color: TEXT }}>‹</button>
-            {detail.photos && detail.photos[0] ? <img src={detail.photos[0]} alt={detail.name} className="w-full h-full object-cover" /> : <span style={{ fontSize: 34 }}>🍺</span>}
+            {detail.photos && detail.photos[activePhotoIndex] ? <img src={detail.photos[activePhotoIndex]} alt={detail.name} className="w-full h-full object-cover" /> : <span style={{ fontSize: 34 }}>🍺</span>}
           </div>
-          {detail.photos && detail.photos.filter((p, i) => i > 0 && p).length > 0 && (
+          {detail.photos && detail.photos.filter(Boolean).length > 1 && (
             <div className="flex gap-2 px-5 pt-3">
-              {detail.photos.filter((p, i) => i > 0 && p).map((p, i) => (
-                <div key={i} className="rounded-lg overflow-hidden" style={{ width: 52, height: 52, background: CARD2, border: `1px solid ${BORDER}` }}>
-                  <img src={p} alt="" className="w-full h-full object-cover" />
-                </div>
+              {detail.photos.map((p, i) => (
+                p ? (
+                  <button
+                    key={i}
+                    onClick={() => setActivePhotoIndex(i)}
+                    className="rounded-lg overflow-hidden"
+                    style={{ width: 52, height: 52, background: CARD2, border: i === activePhotoIndex ? `2px solid ${ACCENT}` : `1px solid ${BORDER}`, opacity: i === activePhotoIndex ? 1 : 0.6 }}
+                  >
+                    <img src={p} alt="" className="w-full h-full object-cover" />
+                  </button>
+                ) : null
               ))}
             </div>
           )}
@@ -1069,7 +1080,7 @@ function App() {
           <h2 style={{ fontWeight: 700, fontSize: 20 }} className="mb-4">{editingId ? "記録を編集" : "新しい一杯を記録"}</h2>
           <div className="flex flex-col gap-4">
             <div>
-              <label style={{ fontSize: 12, color: MUTED, display: "block", marginBottom: 6 }}>写真(最大3枚・タップでメイン写真に切替)</label>
+              <label style={{ fontSize: 12, color: MUTED, display: "block", marginBottom: 6 }}>写真(最大3枚・タップでメイン写真に切替・複数まとめて選択も可)</label>
               <div className="grid grid-cols-3 gap-2">
                 {[0, 1, 2].map((i) => (
                   form.photos[i] ? (
@@ -1099,7 +1110,7 @@ function App() {
                         <span style={{ fontSize: 16 }}>📷</span>
                         <span style={{ fontSize: 10 }}>{i === 0 ? "メイン" : `写真${i + 1}`}</span>
                       </div>
-                      <input type="file" accept="image/*" onChange={(e) => handlePhoto(i, e)} className="hidden" />
+                      <input type="file" accept="image/*" multiple onChange={(e) => handlePhoto(i, e)} className="hidden" />
                     </label>
                   )
                 ))}
