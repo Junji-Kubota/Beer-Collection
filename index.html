@@ -285,6 +285,8 @@ function App() {
   const [fsConfigDraft, setFsConfigDraft] = useState("");
   const [fsError, setFsError] = useState("");
   const [localBackup, setLocalBackup] = useState([]);
+  const [importStatus, setImportStatus] = useState("");
+  const [importError, setImportError] = useState("");
 
   function attachFirestoreListeners() {
     const beersQuery = FS.query(FS.collection(FS.db, "beers"), FS.orderBy("createdAt", "desc"));
@@ -401,6 +403,56 @@ function App() {
       setLocalBackup([]);
     } catch (e) {
       setError("アップロードに失敗しました: " + e.message);
+    }
+  }
+
+  async function handleBulkImport(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setImportStatus("読み込み中…");
+    setImportError("");
+    try {
+      const text = await file.text();
+      const list = JSON.parse(text);
+      if (!Array.isArray(list)) throw new Error("JSONは配列形式である必要があります。");
+      let done = 0;
+      for (let i = 0; i < list.length; i++) {
+        const item = list[i];
+        const beerData = {
+          name: item.name || "",
+          photos: Array.isArray(item.photos) ? [item.photos[0] || "", item.photos[1] || "", item.photos[2] || ""] : ["", "", ""],
+          datetime: item.datetime || "",
+          impression: item.impression || "",
+          rank: item.rank || 0,
+          brewery: item.brewery || "",
+          style: item.style || "",
+          region: item.region || "",
+          abv: item.abv || "",
+          ibu: item.ibu || "",
+          srm: item.srm || "",
+          colorLabel: item.colorLabel || "",
+          adjuncts: item.adjuncts || "",
+          website: item.website || "",
+          purchasePlace: item.purchasePlace || "",
+          price: item.price || "",
+        };
+        const docId = "import_" + Date.now() + "_" + i;
+        if (fsConnected) {
+          await FS.setDoc(FS.doc(FS.db, "beers", docId), { ...beerData, createdAt: Date.now() - (list.length - i) });
+        } else {
+          setBeers((prev) => {
+            const next = [{ ...beerData, id: docId }, ...prev];
+            idbSet("beers", JSON.stringify(next));
+            return next;
+          });
+        }
+        done++;
+        setImportStatus(`インポート中… (${done}/${list.length})`);
+      }
+      setImportStatus(`完了しました(${done}件をインポート)`);
+    } catch (e) {
+      setImportError("インポートに失敗しました: " + e.message);
+      setImportStatus("");
     }
   }
 
@@ -659,6 +711,19 @@ function App() {
                   </button>
                 </div>
               )}
+            </div>
+
+            <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 20, paddingTop: 16 }}>
+              <h3 style={{ fontWeight: 700, fontSize: 16 }}>一括インポート</h3>
+              <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
+                過去のコレクションなどをまとめて登録したいときに使います。指定した形式のJSONファイルを選択すると、記載されているビールを一括で追加します。
+              </p>
+              <label className="flex items-center justify-center gap-2 rounded-xl py-2.5 mt-3 cursor-pointer" style={{ background: CARD2, border: "1px dashed #4A3C2C", color: MUTED, fontSize: 13 }}>
+                JSONファイルを選択
+                <input type="file" accept="application/json" onChange={handleBulkImport} className="hidden" />
+              </label>
+              {importStatus && <p style={{ fontSize: 12, color: ACCENT, marginTop: 8 }}>{importStatus}</p>}
+              {importError && <p style={{ fontSize: 11, color: "#D97757", marginTop: 8 }}>{importError}</p>}
             </div>
           </div>
         </div>
