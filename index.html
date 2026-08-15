@@ -102,6 +102,33 @@ function compressImage(file, maxWidth = 380, quality = 0.55) {
   });
 }
 
+// 外部URLの画像を取得し、圧縮してbase64(dataURL)に変換する
+// (fetchでblob化してからblob URL経由で読み込むことでcanvasのCORS制限を回避)
+async function urlToCompressedBase64(url, maxWidth = 320, quality = 0.5) {
+  const resp = await fetch(url, { mode: "cors" });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  const blob = await resp.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  try {
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("画像の読み込みに失敗しました"));
+      img.onload = () => {
+        const scale = Math.min(1, maxWidth / img.width);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = blobUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
+}
+
 /* ============ 自分のAPIキーでClaudeに直接問い合わせ(ブラウザから直接) ============ */
 /* 写真(ラベル)がある場合はラベルを読み取ってビール名も含めて推定する。
    写真が無い場合は入力済みのビール名だけを手がかりにWeb検索する。 */
@@ -287,6 +314,8 @@ function App() {
   const [localBackup, setLocalBackup] = useState([]);
   const [importStatus, setImportStatus] = useState("");
   const [importError, setImportError] = useState("");
+  const [migrateStatus, setMigrateStatus] = useState("");
+  const [migrateRunning, setMigrateRunning] = useState(false);
 
   function attachFirestoreListeners() {
     const beersQuery = FS.query(FS.collection(FS.db, "beers"), FS.orderBy("createdAt", "desc"));
@@ -454,6 +483,49 @@ function App() {
       setImportError("インポートに失敗しました: " + e.message);
       setImportStatus("");
     }
+  }
+
+  async function migratePhotosToBase64() {
+    setMigrateRunning(true);
+    setMigrateStatus("開始します…");
+    let success = 0, failed = 0;
+    const targets = beers.filter((b) => Array.isArray(b.photos) && b.photos.some((p) => p && p.startsWith("http")));
+    const total = targets.length;
+    for (let i = 0; i < targets.length; i++) {
+      const b = targets[i];
+      const photos = [...b.photos];
+      let changed = false;
+      for (let p = 0; p < photos.length; p++) {
+        const val = photos[p];
+        if (val && val.startsWith("http")) {
+          try {
+            photos[p] = await urlToCompressedBase64(val);
+            changed = true;
+            success++;
+          } catch (err) {
+            failed++;
+          }
+        }
+      }
+      if (changed) {
+        if (fsConnected) {
+          try { await FS.setDoc(FS.doc(FS.db, "beers", b.id), { ...b, photos }); } catch (err) { failed++; }
+        } else {
+          await new Promise((resolve) => {
+            setBeers((prev) => {
+              const next = prev.map((x) => (x.id === b.id ? { ...x, photos } : x));
+              idbSet("beers", JSON.stringify(next)).then(resolve);
+              return next;
+            });
+          });
+        }
+      }
+      setMigrateStatus(`処理中… (${i + 1}/${total}件) 成功${success}枚・失敗${failed}枚`);
+    }
+    setMigrateStatus(total === 0
+      ? "外部URLの写真は見つかりませんでした(すでに移行済みです)。"
+      : `完了しました。成功${success}枚・失敗${failed}枚(失敗分は元のURLのまま残っています)`);
+    setMigrateRunning(false);
   }
 
   async function persistInfo(next) {
@@ -724,6 +796,22 @@ function App() {
               </label>
               {importStatus && <p style={{ fontSize: 12, color: ACCENT, marginTop: 8 }}>{importStatus}</p>}
               {importError && <p style={{ fontSize: 11, color: "#D97757", marginTop: 8 }}>{importError}</p>}
+            </div>
+
+            <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 20, paddingTop: 16 }}>
+              <h3 style={{ fontWeight: 700, fontSize: 16 }}>写真を実データとして保存し直す</h3>
+              <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
+                インポート直後は写真が外部サイト(URL参照)のままの場合があります。このボタンを押すと、外部URLの写真をこの端末で取得・圧縮し、Beer Book自身のデータとして保存し直します(通信環境によって数分かかる場合があります)。
+              </p>
+              <button
+                onClick={migratePhotosToBase64}
+                disabled={migrateRunning}
+                className="w-full py-2.5 rounded-xl mt-3"
+                style={{ background: migrateRunning ? "#4A3C2C" : ACCENT, color: BG, fontSize: 13, fontWeight: 700 }}
+              >
+                {migrateRunning ? "処理中…" : "写真を移行する"}
+              </button>
+              {migrateStatus && <p style={{ fontSize: 12, color: ACCENT, marginTop: 8 }}>{migrateStatus}</p>}
             </div>
           </div>
         </div>
