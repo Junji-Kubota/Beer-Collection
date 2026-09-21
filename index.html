@@ -758,7 +758,7 @@ function App() {
           <div className="w-full rounded-2xl p-5 overflow-y-auto" style={{ background: CARD, border: `1px solid ${BORDER}`, maxWidth: 380, maxHeight: "85vh" }}>
             <h3 style={{ fontWeight: 700, fontSize: 18 }}>Anthropic APIキー</h3>
             <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
-              「自動取得」機能を使うには、ご自身のAnthropic APIキーが必要です。console.anthropic.com で発行できます。キーはこの端末のブラウザ内にのみ保存され、外部には送信されません。
+              「自動取得」機能を使うには、ご自身のAnthropic APIキーが必要です。console.anthropic.com で発行できます。キーはこの端末のブラウザ内にのみ保存されます(他の端末とは同期されません)。「自動取得」を実行したときのみ、キーと、入力したビール名・写真がAnthropicのAPIに直接送信されます。
             </p>
             <input
               value={keyDraft}
