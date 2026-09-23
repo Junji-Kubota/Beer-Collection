@@ -64,7 +64,26 @@ async function idbSet(key, value) {
 }
 
 /* ============ Firebase(Firestore)による端末間同期 ============ */
-let FS = null; // 接続後、{ db, collection, doc, onSnapshot, setDoc, deleteDoc, query, orderBy, ... } を保持
+let FS = null;   // 接続後、{ db, collection, doc, onSnapshot, setDoc, deleteDoc, query, orderBy, ... } を保持
+let AUTH = null; // 接続後、{ auth, signInWithEmailAndPassword, signOut, onAuthStateChanged, ... } を保持
+
+/* ------------------------------------------------------------------
+   ★ 公開用のFirebase設定
+   ここに設定を書いておくと、URLを開いた人は誰でも(設定の貼り付けなしで)
+   コレクションを閲覧できます。Firebaseコンソール →「プロジェクトの設定」→
+   「マイアプリ」に表示される firebaseConfig の中身をそのまま貼り付けてください。
+   ※ この値はブラウザに公開される前提の識別子で、秘密情報ではありません
+     (書き込みの保護はFirestoreのセキュリティルールで行います)。
+   空(null)のままの場合は、従来どおり⚙から貼り付けた設定を使います。
+------------------------------------------------------------------- */
+const PUBLIC_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCLSGSiulneKNmVvPXoERKPCoUFOtvrv94",
+  authDomain: "beer-collection-b43a4.firebaseapp.com",
+  projectId: "beer-collection-b43a4",
+  storageBucket: "beer-collection-b43a4.firebasestorage.app",
+  messagingSenderId: "963844362737",
+  appId: "1:963844362737:web:23d6c0aa9151e81eecb450",
+};
 
 async function connectFirebase(config) {
   const appMod = await import("https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js");
@@ -74,8 +93,10 @@ async function connectFirebase(config) {
   const db = fsMod.getFirestore(app);
   try { await fsMod.enableIndexedDbPersistence(db); } catch (e) { /* 複数タブなどで失敗する場合は無視 */ }
   const auth = authMod.getAuth(app);
-  await authMod.signInAnonymously(auth);
+  // 閲覧は未ログインのまま行う(ルールで read を全員に許可)。
+  // 書き込みはオーナーがメール/パスワードでログインしたときだけ可能。
   FS = { db, ...fsMod };
+  AUTH = { auth, ...authMod };
   return true;
 }
 
@@ -327,6 +348,39 @@ function App() {
   const [importError, setImportError] = useState("");
   const [migrateStatus, setMigrateStatus] = useState("");
   const [migrateRunning, setMigrateRunning] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  // 編集できるのは「Firebase未接続(この端末だけのローカル利用)」か「オーナーとしてログイン中」のとき。
+  // 閲覧者には追加・編集・削除のUIを一切表示しない(実際の書き込み保護はFirestoreルールで行う)。
+  const signedIn = !!(authUser && !authUser.isAnonymous);
+  const canEdit = !fsConnected || signedIn;
+
+  function watchAuth() {
+    if (!AUTH) return;
+    AUTH.onAuthStateChanged(AUTH.auth, (u) => setAuthUser(u));
+  }
+
+  async function handleLogin() {
+    setLoginError("");
+    setLoggingIn(true);
+    try {
+      await AUTH.signInWithEmailAndPassword(AUTH.auth, loginEmail.trim(), loginPassword);
+      setLoginPassword("");
+    } catch (e) {
+      setLoginError("ログインできませんでした。メールアドレスとパスワードをご確認ください。(" + (e.code || e.message) + ")");
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
+  async function handleLogout() {
+    try { await AUTH.signOut(AUTH.auth); } catch (e) { /* 無視 */ }
+    setScreen("list");
+  }
 
   function attachFirestoreListeners() {
     const beersQuery = FS.query(FS.collection(FS.db, "beers"), FS.orderBy("createdAt", "desc"));
@@ -339,20 +393,23 @@ function App() {
       if (d) {
         setInfoLinks(d.links || DEFAULT_INFO_LINKS);
         setInfoNotes(d.notes || []);
-      } else {
+      } else if (AUTH && AUTH.auth.currentUser && !AUTH.auth.currentUser.isAnonymous) {
+        // 初期データの書き込みはオーナーのときだけ(閲覧者は既定値を表示するだけ)
         FS.setDoc(FS.doc(FS.db, "infoMeta", "data"), { links: DEFAULT_INFO_LINKS, notes: [] });
       }
-    });
+    }, () => { /* 読み取りエラーは既定値のまま表示 */ });
 
     FS.onSnapshot(FS.collection(FS.db, "infoImages"), (snap) => {
       if (snap.empty) {
-        DEFAULT_INFO_IMAGES.forEach((img) => {
-          FS.setDoc(FS.doc(FS.db, "infoImages", img.id), { caption: img.caption, src: img.src });
-        });
+        if (AUTH && AUTH.auth.currentUser && !AUTH.auth.currentUser.isAnonymous) {
+          DEFAULT_INFO_IMAGES.forEach((img) => {
+            FS.setDoc(FS.doc(FS.db, "infoImages", img.id), { caption: img.caption, src: img.src });
+          });
+        }
       } else {
         setInfoImages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       }
-    });
+    }, () => { /* 読み取りエラーは既定値のまま表示 */ });
   }
 
   async function loadLocalFallback() {
@@ -379,11 +436,12 @@ function App() {
       setApiKey(key);
 
       const fsConfigStr = localStorage.getItem("firebase_config");
-      if (fsConfigStr) {
+      if (PUBLIC_FIREBASE_CONFIG || fsConfigStr) {
         try {
-          const config = JSON.parse(fsConfigStr);
+          const config = PUBLIC_FIREBASE_CONFIG || JSON.parse(fsConfigStr);
           await connectFirebase(config);
           setFsConnected(true);
+          watchAuth();
           attachFirestoreListeners();
         } catch (e) {
           setFsError("Firebaseへの接続に失敗しました。設定を確認してください。詳細: " + e.message);
@@ -424,6 +482,7 @@ function App() {
       await connectFirebase(config);
       localStorage.setItem("firebase_config", JSON.stringify(config));
       setFsConnected(true);
+      watchAuth();
       attachFirestoreListeners();
     } catch (e) {
       setFsError("接続に失敗しました。貼り付けた設定をご確認ください。詳細: " + e.message);
@@ -756,6 +815,54 @@ function App() {
       {showKeyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{ background: "rgba(0,0,0,0.6)" }}>
           <div className="w-full rounded-2xl p-5 overflow-y-auto" style={{ background: CARD, border: `1px solid ${BORDER}`, maxWidth: 380, maxHeight: "85vh" }}>
+            {fsConnected && (
+              <div style={{ marginBottom: canEdit ? 20 : 0, paddingBottom: canEdit ? 16 : 0, borderBottom: canEdit ? `1px solid ${BORDER}` : "none" }}>
+                <h3 style={{ fontWeight: 700, fontSize: 18 }}>オーナーログイン</h3>
+                {signedIn ? (
+                  <>
+                    <p style={{ fontSize: 12, color: ACCENT, marginTop: 6 }}>✓ {authUser.email} でログイン中(編集できます)</p>
+                    <p style={{ fontSize: 11, color: FAINT, marginTop: 6, wordBreak: "break-all" }}>UID: <code style={{ fontFamily: "monospace" }}>{authUser.uid}</code></p>
+                    <button onClick={handleLogout} className="w-full py-2 rounded-xl mt-3" style={{ background: CARD2, color: TEXT, fontSize: 12.5, fontWeight: 600 }}>
+                      ログアウト
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
+                      記録の追加・編集はオーナーのみが行えます。閲覧だけならログインは不要です。
+                    </p>
+                    <input
+                      type="email"
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      placeholder="メールアドレス"
+                      autoComplete="username"
+                      style={{ width: "100%", background: CARD2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 12px", color: TEXT, fontSize: 13, marginTop: 12, outline: "none" }}
+                    />
+                    <input
+                      type="password"
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleLogin(); }}
+                      placeholder="パスワード"
+                      autoComplete="current-password"
+                      style={{ width: "100%", background: CARD2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 12px", color: TEXT, fontSize: 13, marginTop: 8, outline: "none" }}
+                    />
+                    {loginError && <p style={{ color: "#D97757", fontSize: 11, marginTop: 6 }}>{loginError}</p>}
+                    <div className="flex gap-2 mt-3">
+                      <button onClick={() => setShowKeyModal(false)} className="flex-1 py-2.5 rounded-xl" style={{ background: CARD2, color: TEXT, fontSize: 13, fontWeight: 600 }}>
+                        閉じる
+                      </button>
+                      <button onClick={handleLogin} disabled={loggingIn} className="flex-1 py-2.5 rounded-xl" style={{ background: loggingIn ? "#4A3C2C" : ACCENT, color: BG, fontSize: 13, fontWeight: 700 }}>
+                        {loggingIn ? "ログイン中…" : "ログイン"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {canEdit && (<>
             <h3 style={{ fontWeight: 700, fontSize: 18 }}>Anthropic APIキー</h3>
             <p style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.6 }}>
               「自動取得」機能を使うには、ご自身のAnthropic APIキーが必要です。console.anthropic.com で発行できます。キーはこの端末のブラウザ内にのみ保存されます(他の端末とは同期されません)。「自動取得」を実行したときのみ、キーと、入力したビール名・写真がAnthropicのAPIに直接送信されます。
@@ -835,6 +942,7 @@ function App() {
               </button>
               {migrateStatus && <p style={{ fontSize: 12, color: ACCENT, marginTop: 8 }}>{migrateStatus}</p>}
             </div>
+            </>)}
           </div>
         </div>
       )}
@@ -852,11 +960,13 @@ function App() {
               <div className="flex items-center gap-2">
                 <button onClick={() => { setKeyDraft(apiKey); setShowKeyModal(true); }} className="flex items-center justify-center rounded-full relative" style={{ width: 34, height: 34, background: CARD, border: `1px solid ${BORDER}`, color: MUTED, fontSize: 14 }} title="設定">
                   ⚙
-                  {fsConnected && <span style={{ position: "absolute", top: -1, right: -1, width: 8, height: 8, borderRadius: "50%", background: ACCENT, border: `1.5px solid ${BG}` }} />}
+                  {signedIn && <span style={{ position: "absolute", top: -1, right: -1, width: 8, height: 8, borderRadius: "50%", background: ACCENT, border: `1.5px solid ${BG}` }} />}
                 </button>
-                <button onClick={startAdd} className="flex items-center gap-1 rounded-full" style={{ background: ACCENT, color: BG, fontWeight: 700, fontSize: 13, padding: "8px 14px" }}>
-                  ＋ New
-                </button>
+                {canEdit && (
+                  <button onClick={startAdd} className="flex items-center gap-1 rounded-full" style={{ background: ACCENT, color: BG, fontWeight: 700, fontSize: 13, padding: "8px 14px" }}>
+                    ＋ New
+                  </button>
+                )}
               </div>
             </div>
             {beers.length > 0 && (
@@ -882,7 +992,7 @@ function App() {
               <div className="mt-16 text-center" style={{ color: FAINT }}>
                 <div style={{ fontSize: 40, opacity: 0.5, marginBottom: 12 }}>🍺</div>
                 <p style={{ fontSize: 18, color: MUTED }}>まだ記録がありません</p>
-                <p style={{ fontSize: 13, marginTop: 4 }}>右上の ＋New から最初の一杯を記録しましょう</p>
+                {canEdit && <p style={{ fontSize: 13, marginTop: 4 }}>右上の ＋New から最初の一杯を記録しましょう</p>}
               </div>
             )}
 
@@ -957,17 +1067,18 @@ function App() {
                   {infoLinks.map((l) => (
                     <div key={l.id} className="flex items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
                       <a href={l.url} target="_blank" rel="noreferrer" className="flex-1 truncate" style={{ color: ACCENT, fontSize: 13.5, fontWeight: 600 }}>{l.label}</a>
-                      <button onClick={() => deleteInfoLink(l.id)} style={{ color: FAINT, fontSize: 13, padding: 4 }}>✕</button>
+                      {canEdit && <button onClick={() => deleteInfoLink(l.id)} style={{ color: FAINT, fontSize: 13, padding: 4 }}>✕</button>}
                     </div>
                   ))}
                 </div>
-                <div className="rounded-xl p-3 mb-8" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+                {!canEdit && <div className="mb-8" />}
+                {canEdit && <div className="rounded-xl p-3 mb-8" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
                   <div className="flex flex-col gap-2">
                     <input value={newLinkLabel} onChange={(e) => setNewLinkLabel(e.target.value)} placeholder="リンク名" style={inputStyle} />
                     <input value={newLinkUrl} onChange={(e) => setNewLinkUrl(e.target.value)} placeholder="https://..." style={inputStyle} />
                     <button onClick={addInfoLink} className="py-2 rounded-xl" style={{ background: ACCENT, color: BG, fontWeight: 700, fontSize: 13 }}>＋ リンクを追加</button>
                   </div>
-                </div>
+                </div>}
 
                 <h2 style={{ fontWeight: 700, fontSize: 16, marginBottom: 8, color: ACCENT }}>IMAGES</h2>
                 <div className="flex flex-col gap-3 mb-3">
@@ -976,16 +1087,20 @@ function App() {
                       <img src={img.src} alt={img.caption || "image"} className="w-full" />
                       <div className="flex items-center justify-between px-3 py-2">
                         <span style={{ fontSize: 11.5, color: MUTED }}>{img.caption}</span>
-                        <button onClick={() => deleteInfoImage(img.id)} style={{ color: FAINT, fontSize: 12 }}>✕ 削除</button>
+                        {canEdit && <button onClick={() => deleteInfoImage(img.id)} style={{ color: FAINT, fontSize: 12 }}>✕ 削除</button>}
                       </div>
                     </div>
                   ))}
                 </div>
-                <label className="flex items-center justify-center gap-2 rounded-xl py-3 mb-8 cursor-pointer" style={{ background: CARD, border: "1px dashed #4A3C2C", color: FAINT, fontSize: 13 }}>
-                  📷 画像を追加
-                  <input type="file" accept="image/*" onChange={addInfoImage} className="hidden" />
-                </label>
+                {canEdit && (
+                  <label className="flex items-center justify-center gap-2 rounded-xl py-3 mb-8 cursor-pointer" style={{ background: CARD, border: "1px dashed #4A3C2C", color: FAINT, fontSize: 13 }}>
+                    📷 画像を追加
+                    <input type="file" accept="image/*" onChange={addInfoImage} className="hidden" />
+                  </label>
+                )}
 
+                {/* MEMOは個人的な覚え書きのため、オーナー(編集可能なとき)にだけ表示 */}
+                {canEdit && (<>
                 <h2 style={{ fontWeight: 700, fontSize: 16, marginBottom: 8, color: ACCENT }}>MEMO</h2>
                 <div className="rounded-xl p-3 mb-3" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
                   <textarea value={newNote} onChange={(e) => setNewNote(e.target.value)} rows={3} placeholder="気づいたことを自由にメモ" style={{ ...inputStyle, resize: "vertical" }} />
@@ -1002,6 +1117,7 @@ function App() {
                     </div>
                   ))}
                 </div>
+                </>)}
               </div>
             )}
           </main>
@@ -1034,7 +1150,7 @@ function App() {
             <p style={{ color: ACCENT, fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" }}>{(detail.brewery || "不明").toUpperCase()}</p>
             <h2 style={{ fontWeight: 700, fontSize: 26, marginTop: 2 }}>{detail.name}</h2>
             {detail.impression && <p style={{ color: MUTED, fontSize: 14, marginTop: 8, lineHeight: 1.6 }}>{detail.impression}</p>}
-            <button onClick={() => startEdit(detail)} className="flex items-center gap-1.5 mt-4" style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>✎ Edit</button>
+            {canEdit && <button onClick={() => startEdit(detail)} className="flex items-center gap-1.5 mt-4" style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>✎ Edit</button>}
             <h3 style={{ fontWeight: 700, fontSize: 18, marginTop: 20, marginBottom: 8 }}>Details</h3>
             <div className="grid grid-cols-2 gap-2">
               <Chip full label="RATING">
@@ -1057,7 +1173,7 @@ function App() {
                 {detail.website ? <a href={detail.website} target="_blank" rel="noreferrer" style={{ color: ACCENT, fontSize: 13, fontWeight: 600 }}>{detail.website}</a> : <span style={{ fontSize: 13, fontWeight: 600 }}>—</span>}
               </Chip>
             </div>
-            <div className="flex justify-center mt-6 mb-4">
+            {canEdit && <div className="flex justify-center mt-6 mb-4">
               <button
                 onClick={() => {
                   if (window.confirm(`「${detail.name}」を削除します。この操作は取り消せません。よろしいですか？`)) {
@@ -1069,12 +1185,13 @@ function App() {
               >
                 🗑 削除する
               </button>
-            </div>
+            </div>}
+            {!canEdit && <div className="mb-6" />}
           </div>
         </div>
       )}
 
-      {screen === "form" && (
+      {screen === "form" && canEdit && (
         <div className="px-5 pt-6">
           <button onClick={() => setScreen("list")} className="flex items-center gap-1 mb-4" style={{ color: MUTED, fontSize: 13 }}>‹ 戻る</button>
           <h2 style={{ fontWeight: 700, fontSize: 20 }} className="mb-4">{editingId ? "記録を編集" : "新しい一杯を記録"}</h2>
